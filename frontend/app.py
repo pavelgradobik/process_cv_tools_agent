@@ -23,7 +23,7 @@ from backend.config import (
 )
 from backend.file_processor import ResumeProcessor
 from backend.embeddings import OpenAIEmbedder
-from backend.vector_store import VectorStore
+from backend.vectore_store import VectorStore
 from backend.llm_client import OpenAIChatClient
 
 # Page configuration
