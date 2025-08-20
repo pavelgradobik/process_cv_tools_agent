@@ -1,165 +1,192 @@
 """
 Streamlit Frontend for Resume Analysis System
-Simplified to 2 tabs with improved functionality and OpenAI integration.
+Fully migrated to LlamaIndex for better document processing and retrieval.
 """
 
 import streamlit as st
 import pandas as pd
+import json
 import time
 from datetime import datetime
 from pathlib import Path
 import sys
-import json
 
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.config import (
-    DEFAULT_CSV_PATH,
+from backend.llama_config import (
     OPENAI_API_KEY,
-    OPENAI_EMBEDDING_MODEL,
-    OPENAI_CHAT_MODEL,
-    DEFAULT_TOP_K,
+    EMBEDDING_MODEL,
+    LLM_MODEL,
+    cost_tracker,
+    initialize_llama_index,
 )
 from backend.file_processor import ResumeProcessor
-from backend.embeddings import OpenAIEmbedder
-from backend.vectore_store import VectorStore
-from backend.llm_client import OpenAIChatClient
+from backend.llama_index_store import LlamaIndexStore
+from backend.llama_query_engine import (
+    ResumeQueryEngine,
+    SmartResumeAgent,
+    QueryConfig,
+)
 
 # Page configuration
 st.set_page_config(
-    page_title="Resume Analysis System",
-    page_icon="📚",
+    page_title="Resume Analysis System - LlamaIndex",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # Initialize session state
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
-if "embedder" not in st.session_state:
-    st.session_state.embedder = None
-if "llm_client" not in st.session_state:
-    st.session_state.llm_client = None
-if "indexed_resumes" not in st.session_state:
-    st.session_state.indexed_resumes = 0
-if "last_search_results" not in st.session_state:
-    st.session_state.last_search_results = []
+if "llama_store" not in st.session_state:
+    st.session_state.llama_store = None
+if "query_engine" not in st.session_state:
+    st.session_state.query_engine = None
+if "smart_agent" not in st.session_state:
+    st.session_state.smart_agent = None
+if "indexed_count" not in st.session_state:
+    st.session_state.indexed_count = 0
+if "last_results" not in st.session_state:
+    st.session_state.last_results = []
 if "selected_file" not in st.session_state:
     st.session_state.selected_file = None
-if "api_costs" not in st.session_state:
-    st.session_state.api_costs = {"embeddings": 0.0, "chat": 0.0}
 
 
-def initialize_components():
-    """Initialize AI components."""
+def initialize_system():
+    """Initialize LlamaIndex components."""
     if not OPENAI_API_KEY:
         st.error("⚠️ OpenAI API key not found! Please add it to your .env file.")
         st.stop()
 
-    with st.spinner("Initializing AI components..."):
-        # Initialize embedder
-        if st.session_state.embedder is None:
-            st.session_state.embedder = OpenAIEmbedder()
+    with st.spinner("Initializing LlamaIndex components..."):
+        # Initialize LlamaIndex settings
+        initialize_llama_index()
 
-        # Initialize vector store
-        if st.session_state.vector_store is None:
-            st.session_state.vector_store = VectorStore()
+        # Initialize store
+        if st.session_state.llama_store is None:
+            st.session_state.llama_store = LlamaIndexStore()
 
-        # Initialize LLM client
-        if st.session_state.llm_client is None:
-            st.session_state.llm_client = OpenAIChatClient()
+            # Try to load existing index
+            existing_index = st.session_state.llama_store.load_index()
+            if existing_index:
+                st.session_state.indexed_count = st.session_state.llama_store.document_count
+
+        # Initialize query engine
+        if st.session_state.query_engine is None and st.session_state.llama_store:
+            st.session_state.query_engine = ResumeQueryEngine(st.session_state.llama_store)
+            st.session_state.smart_agent = SmartResumeAgent(st.session_state.query_engine)
 
 
-def display_costs():
-    """Display API usage costs in sidebar."""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("💰 API Usage")
+def display_sidebar():
+    """Display sidebar with system info and controls."""
+    st.sidebar.title("🚀 LlamaIndex Control Panel")
 
-    total_cost = sum(st.session_state.api_costs.values())
+    # System status
+    st.sidebar.markdown("### 📊 System Status")
+
+    status_color = "🟢" if st.session_state.indexed_count > 0 else "🔴"
+    st.sidebar.info(f"""
+    {status_color} **Status**: {"Ready" if st.session_state.indexed_count > 0 else "Not Indexed"}
+    📚 **Documents**: {st.session_state.indexed_count}
+    🤖 **LLM**: {LLM_MODEL}
+    🔤 **Embeddings**: {EMBEDDING_MODEL}
+    """)
+
+    # Cost tracking
+    st.sidebar.markdown("### 💰 Cost Tracking")
+    costs = cost_tracker.get_summary()
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        st.metric("Embeddings", f"${st.session_state.api_costs['embeddings']:.4f}")
+        st.metric(
+            "Embedding Tokens",
+            f"{costs['embedding_tokens']:,}"
+        )
     with col2:
-        st.metric("Chat", f"${st.session_state.api_costs['chat']:.4f}")
+        st.metric(
+            "LLM Tokens",
+            f"{costs['llm_input_tokens'] + costs['llm_output_tokens']:,}"
+        )
 
-    st.sidebar.metric("Total Cost", f"${total_cost:.4f}")
+    st.sidebar.metric(
+        "Total Cost",
+        f"${costs['total_cost']:.4f}"
+    )
 
     if st.sidebar.button("Reset Costs"):
-        st.session_state.api_costs = {"embeddings": 0.0, "chat": 0.0}
-        if st.session_state.embedder:
-            st.session_state.embedder.reset_usage_stats()
-        if st.session_state.llm_client:
-            st.session_state.llm_client.total_cost = 0.0
+        cost_tracker.reset()
         st.rerun()
 
+    # Advanced settings
+    with st.sidebar.expander("⚙️ Advanced Settings"):
+        st.slider(
+            "Chunk Size",
+            min_value=128,
+            max_value=1024,
+            value=512,
+            step=64,
+            key="chunk_size",
+            help="Size of text chunks for indexing"
+        )
 
-def display_system_info():
-    """Display system information in sidebar."""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("ℹ️ System Info")
+        st.slider(
+            "Chunk Overlap",
+            min_value=0,
+            max_value=256,
+            value=50,
+            step=10,
+            key="chunk_overlap",
+            help="Overlap between chunks"
+        )
 
-    st.sidebar.info(f"""
-    **Models:**
-    - Embeddings: {OPENAI_EMBEDDING_MODEL}
-    - Chat: {OPENAI_CHAT_MODEL}
-    
-    **Database:**
-    - Indexed: {st.session_state.indexed_resumes} resumes
-    - Status: {"🟢 Ready" if st.session_state.vector_store else "🔴 Not initialized"}
-    """)
+        st.selectbox(
+            "Response Mode",
+            ["compact", "tree_summarize", "no_text"],
+            key="response_mode",
+            help="How to synthesize responses"
+        )
 
 
 # Main UI
-st.title("📚 Resume Analysis System")
-st.caption("Powered by OpenAI and ChromaDB")
+st.title("🚀 Resume Analysis System - LlamaIndex Edition")
+st.caption("Powered by LlamaIndex, OpenAI, and ChromaDB")
 
-# Initialize components
-initialize_components()
-
-# Sidebar
-st.sidebar.title("🎛️ Control Panel")
-display_system_info()
-display_costs()
+# Initialize system
+initialize_system()
+display_sidebar()
 
 # Main tabs
-tab1, tab2 = st.tabs(["📊 Index & Search", "🤖 AI Assistant"])
+tab1, tab2, tab3 = st.tabs(["📚 Index Management", "🔍 Smart Search", "🤖 AI Agent"])
 
 # ============================
-# TAB 1: Index & Search
+# TAB 1: Index Management
 # ============================
 with tab1:
-    st.header("Resume Index & Search")
+    st.header("Document Index Management")
 
-    # File selection section
+    # File selection
     with st.expander("📁 Data Source", expanded=True):
-        col1, col2 = st.columns([3, 1])
+        source_type = st.radio(
+            "Select data source:",
+            ["Use Resume.xlsx", "Upload file"],
+            horizontal=True,
+        )
 
-        with col1:
-            source_type = st.radio(
-                "Select data source:",
-                ["Use default CSV", "Upload file", "Use URL"],
-                horizontal=True,
-            )
+        if source_type == "Use Resume.xlsx":
+            data_path = Path("data/Resume.xlsx")
+            if data_path.exists():
+                st.session_state.selected_file = str(data_path)
+                st.success(f"✅ Using: {data_path.name}")
+            else:
+                st.error("Resume.xlsx not found in data directory")
 
-        with col2:
-            if st.button("🔄 Refresh", use_container_width=True):
-                st.rerun()
-
-        if source_type == "Use default CSV":
-            st.session_state.selected_file = DEFAULT_CSV_PATH
-            st.success(f"Using: {Path(DEFAULT_CSV_PATH).name}")
-
-        elif source_type == "Upload file":
+        else:
             uploaded_file = st.file_uploader(
-                "Choose a CSV or Excel file",
+                "Upload CSV or Excel file",
                 type=["csv", "xlsx", "xls"],
-                help="Upload a file containing resume data"
             )
 
             if uploaded_file:
-                # Save uploaded file
                 save_path = Path("data/uploads") / uploaded_file.name
                 save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -167,494 +194,417 @@ with tab1:
                     f.write(uploaded_file.getbuffer())
 
                 st.session_state.selected_file = str(save_path)
-                st.success(f"Uploaded: {uploaded_file.name}")
+                st.success(f"✅ Uploaded: {uploaded_file.name}")
 
-        elif source_type == "Use URL":
-            url = st.text_input(
-                "Enter CSV/Excel URL:",
-                placeholder="https://example.com/resumes.csv"
-            )
-
-            if url and st.button("Download"):
-                # Here you would implement URL download
-                st.info("URL download will be implemented")
-
-    # Indexing section
+    # Indexing controls
     with st.expander("🔧 Build Index", expanded=True):
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            st.info("Click 'Build Index' to process ALL resumes from the selected file")
-            rebuild = st.checkbox(
-                "Rebuild index (delete existing)",
-                help="Delete existing index and create new one"
-            )
-
-        with col2:
-            if st.button("🚀 Build Index", type="primary", use_container_width=True):
-                if not st.session_state.selected_file:
-                    st.error("Please select a data source first!")
-                else:
-                    # Process resumes
-                    with st.spinner("Loading and processing resumes..."):
-                        processor = ResumeProcessor()
-                        resumes, stats = processor.process_resumes(
-                            st.session_state.selected_file,
-                            limit=None  # Process ALL resumes
-                        )
-
-                    if not resumes:
-                        st.error(f"No resumes found! Stats: {stats}")
-                    else:
-                        st.success(f"Loaded {len(resumes)} resumes")
-
-                        # Reset index if requested
-                        if rebuild:
-                            with st.spinner("Resetting index..."):
-                                st.session_state.vector_store.reset_collection()
-
-                        # Generate embeddings
-                        with st.spinner(f"Generating embeddings with {OPENAI_EMBEDDING_MODEL}..."):
-                            texts = [r["text"] for r in resumes]
-
-                            # Estimate cost
-                            cost_estimate = st.session_state.embedder.estimate_cost(texts)
-                            st.info(f"Estimated cost: ${cost_estimate['estimated_cost']:.4f}")
-
-                            # Generate embeddings (this is no longer needed with ChromaDB's built-in)
-                            # We'll let ChromaDB handle it
-
-                        # Index documents
-                        progress_bar = st.progress(0)
-                        with st.spinner("Indexing documents..."):
-                            added = st.session_state.vector_store.add_documents(
-                                resumes,
-                                batch_size=50
-                            )
-                            progress_bar.progress(1.0)
-
-                        # Update stats
-                        st.session_state.indexed_resumes = added
-
-                        # Update costs (approximate)
-                        if st.session_state.embedder:
-                            stats = st.session_state.embedder.get_usage_stats()
-                            st.session_state.api_costs["embeddings"] += stats["total_cost"]
-
-                        st.success(f"✅ Successfully indexed {added} resumes!")
-
-    # Search section
-    st.markdown("---")
-    st.subheader("🔍 Search Resumes")
-
-    col1, col2 = st.columns([4, 1])
-
-    with col1:
-        search_query = st.text_input(
-            "Search query:",
-            placeholder="e.g., Python developer with 5+ years experience in machine learning",
-            help="Enter your search criteria"
-        )
-
-    with col2:
-        top_k = st.number_input(
-            "Results:",
-            min_value=1,
-            max_value=50,
-            value=DEFAULT_TOP_K,
-            help="Number of results to return"
-        )
-
-    # Advanced filters
-    with st.expander("🎯 Advanced Filters"):
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            min_years = st.number_input(
-                "Minimum years experience:",
-                min_value=0,
-                max_value=50,
-                value=0,
-                help="Filter by years of experience"
-            )
-
-        with col2:
-            required_skills = st.text_input(
-                "Required skills (comma-separated):",
-                placeholder="Python, Docker, AWS",
-                help="Skills that must be present"
-            )
-
-        with col3:
-            min_similarity = st.slider(
-                "Minimum similarity:",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.05,
-                help="Minimum similarity score"
-            )
-
-    if st.button("🔍 Search", type="primary", use_container_width=True):
-        if not search_query:
-            st.warning("Please enter a search query!")
-        elif st.session_state.indexed_resumes == 0:
-            st.error("No resumes indexed! Please build the index first.")
-        else:
-            with st.spinner("Searching..."):
-                # Build metadata filter
-                metadata_filter = {}
-                if min_years > 0:
-                    metadata_filter["years_experience"] = {"$gte": float(min_years)}
-
-                # Perform search
-                keywords = [s.strip() for s in required_skills.split(",")] if required_skills else []
-
-                results = st.session_state.vector_store.hybrid_search(
-                    query=search_query,
-                    keywords=keywords,
-                    top_k=top_k,
-                    filter_metadata=metadata_filter,
-                )
-
-                # Filter by similarity
-                results = [r for r in results if r.get("similarity", 0) >= min_similarity]
-
-                st.session_state.last_search_results = results
-
-            if results:
-                st.success(f"Found {len(results)} matching resumes")
-
-                # Display results
-                for i, result in enumerate(results, 1):
-                    with st.expander(
-                        f"**#{i}** | {result['metadata'].get('title', 'Unknown')} | "
-                        f"Score: {result.get('combined_score', result['similarity']):.3f}"
-                    ):
-                        # Metadata
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Years Experience",
-                                     result['metadata'].get('years_experience', 'N/A'))
-                        with col2:
-                            st.metric("Similarity",
-                                     f"{result['similarity']:.3f}")
-                        with col3:
-                            if "keyword_score" in result:
-                                st.metric("Keyword Match",
-                                         f"{result['keyword_score']:.3f}")
-
-                        # Skills
-                        if result['metadata'].get('skills'):
-                            st.write("**Skills:**", result['metadata']['skills'][:200])
-
-                        # Text preview
-                        st.write("**Preview:**")
-                        st.text(result['text'][:500] + "...")
-
-                        # Contact info if available
-                        if result['metadata'].get('email') or result['metadata'].get('linkedin'):
-                            st.write("**Contact:**")
-                            if result['metadata'].get('email'):
-                                st.write(f"📧 {result['metadata']['email']}")
-                            if result['metadata'].get('linkedin'):
-                                st.write(f"💼 {result['metadata']['linkedin']}")
-            else:
-                st.warning("No results found. Try adjusting your search criteria.")
-
-# ============================
-# TAB 2: AI Assistant
-# ============================
-with tab2:
-    st.header("🤖 AI-Powered Resume Analysis")
-
-    if not st.session_state.last_search_results:
-        st.info("👈 Please perform a search in the 'Index & Search' tab first to analyze results.")
-    else:
-        st.success(f"Analyzing {len(st.session_state.last_search_results)} search results")
-
-        # Analysis options
         col1, col2 = st.columns([3, 1])
 
         with col1:
-            analysis_type = st.selectbox(
-                "Select analysis type:",
-                [
-                    "Find best candidate match",
-                    "Generate comparative analysis",
-                    "Extract key insights",
-                    "Create hiring recommendations",
-                    "Custom analysis"
-                ]
+            rebuild = st.checkbox(
+                "Rebuild index (delete existing)",
+                help="Start fresh with new index"
+            )
+
+            show_preview = st.checkbox(
+                "Show data preview",
+                value=True,
+                help="Preview data before indexing"
             )
 
         with col2:
-            num_candidates = st.number_input(
-                "Analyze top:",
-                min_value=1,
-                max_value=min(20, len(st.session_state.last_search_results)),
-                value=min(5, len(st.session_state.last_search_results)),
-                help="Number of candidates to analyze"
+            index_button = st.button(
+                "🚀 Build Index",
+                type="primary",
+                use_container_width=True,
             )
 
-        # Custom prompt for custom analysis
-        custom_prompt = None
-        if analysis_type == "Custom analysis":
-            custom_prompt = st.text_area(
-                "Enter your analysis requirements:",
-                placeholder="What would you like to know about these candidates?",
+        if index_button:
+            if not st.session_state.selected_file:
+                st.error("Please select a data source!")
+            else:
+                # Load and process resumes
+                with st.spinner("Loading resumes..."):
+                    processor = ResumeProcessor()
+                    resumes, stats = processor.process_resumes(
+                        st.session_state.selected_file,
+                        limit=None  # Process all
+                    )
+
+                if not resumes:
+                    st.error(f"No resumes loaded. Stats: {stats}")
+                else:
+                    st.success(f"✅ Loaded {len(resumes)} resumes")
+
+                    # Show preview
+                    if show_preview:
+                        st.subheader("Data Preview")
+                        preview_df = pd.DataFrame([
+                            {
+                                "ID": r["id"],
+                                "Title": r["metadata"].get("title", "N/A"),
+                                "Years": r["metadata"].get("years_experience", 0),
+                                "Skills": (r["metadata"].get("skills", "")[:100] + "..."),
+                            }
+                            for r in resumes[:5]
+                        ])
+                        st.dataframe(preview_df)
+
+                    # Build index
+                    with st.spinner("Building LlamaIndex..."):
+                        try:
+                            # Update chunk settings if changed
+                            if "chunk_size" in st.session_state:
+                                initialize_llama_index(
+                                    chunk_size=st.session_state.chunk_size,
+                                    chunk_overlap=st.session_state.chunk_overlap,
+                                )
+
+                            # Build index
+                            index = st.session_state.llama_store.build_index(
+                                resumes,
+                                rebuild=rebuild
+                            )
+
+                            # Update query engine
+                            st.session_state.query_engine = ResumeQueryEngine(
+                                st.session_state.llama_store
+                            )
+                            st.session_state.smart_agent = SmartResumeAgent(
+                                st.session_state.query_engine
+                            )
+
+                            st.session_state.indexed_count = len(resumes)
+
+                            st.success(f"✅ Successfully indexed {len(resumes)} resumes!")
+
+                            # Show stats
+                            stats = st.session_state.llama_store.get_stats()
+                            st.json(stats)
+
+                        except Exception as e:
+                            st.error(f"Indexing failed: {str(e)}")
+                            st.exception(e)
+
+# ============================
+# TAB 2: Smart Search
+# ============================
+with tab2:
+    st.header("🔍 Smart Resume Search")
+
+    if st.session_state.indexed_count == 0:
+        st.warning("⚠️ No documents indexed. Please build index first.")
+    else:
+        # Search interface
+        search_query = st.text_area(
+            "Enter your search query:",
+            placeholder="e.g., Senior Python developer with 5+ years experience in machine learning and AWS",
+            height=100,
+        )
+
+        # Search settings
+        with st.expander("🎯 Search Settings"):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                top_k = st.slider(
+                    "Number of results",
+                    min_value=1,
+                    max_value=50,
+                    value=10,
+                )
+
+            with col2:
+                search_mode = st.selectbox(
+                    "Search mode",
+                    ["semantic", "hybrid", "keyword"],
+                )
+
+            with col3:
+                include_analysis = st.checkbox(
+                    "Include AI analysis",
+                    value=False,
+                )
+
+        # Search button
+        if st.button("🔍 Search", type="primary", use_container_width=True):
+            if not search_query:
+                st.warning("Please enter a search query!")
+            else:
+                with st.spinner("Searching..."):
+                    try:
+                        # Execute search
+                        config = QueryConfig(
+                            top_k=top_k,
+                            response_mode=st.session_state.get("response_mode", "compact"),
+                        )
+
+                        results = st.session_state.query_engine.search(
+                            search_query,
+                            config=config,
+                        )
+
+                        st.session_state.last_results = results
+
+                        if results:
+                            st.success(f"Found {len(results)} matching resumes")
+
+                            # Display results
+                            for i, result in enumerate(results, 1):
+                                with st.expander(
+                                    f"**#{i}** | ID: {result['id']} | Score: {result['score']:.3f}"
+                                ):
+                                    metadata = result.get("metadata", {})
+
+                                    # Display metadata
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric("Years", metadata.get("years_experience", "N/A"))
+                                    with col2:
+                                        st.metric("Title", metadata.get("title", "N/A"))
+                                    with col3:
+                                        st.metric("Score", f"{result['score']:.3f}")
+
+                                    # Skills
+                                    if metadata.get("skills"):
+                                        st.write("**Skills:**", metadata["skills"][:200])
+
+                                    # Text preview
+                                    st.write("**Preview:**")
+                                    st.text(result["text"][:500] + "...")
+
+                            # Optional analysis
+                            if include_analysis:
+                                with st.spinner("Generating insights..."):
+                                    insights = st.session_state.query_engine.generate_insights(
+                                        search_query,
+                                        insight_type="general"
+                                    )
+
+                                    st.subheader("📊 Search Insights")
+                                    st.json(insights)
+                        else:
+                            st.warning("No results found. Try adjusting your query.")
+
+                    except Exception as e:
+                        st.error(f"Search failed: {str(e)}")
+
+# ============================
+# TAB 3: AI Agent
+# ============================
+with tab3:
+    st.header("🤖 Smart Resume Agent")
+
+    if st.session_state.indexed_count == 0:
+        st.warning("⚠️ No documents indexed. Please build index first.")
+    else:
+        # Agent mode selection
+        agent_mode = st.selectbox(
+            "Select agent mode:",
+            [
+                "Find Best Match",
+                "Compare Candidates",
+                "Analyze Requirements",
+                "Generate Report",
+            ]
+        )
+
+        if agent_mode == "Find Best Match":
+            st.subheader("🎯 Find Best Matching Candidate")
+
+            requirements = st.text_area(
+                "Job Requirements:",
+                placeholder="Describe the ideal candidate and job requirements...",
+                height=150,
+            )
+
+            # Additional constraints
+            with st.expander("Additional Constraints"):
+                min_years = st.number_input("Minimum years experience", 0, 50, 0)
+                required_skills = st.text_input(
+                    "Required skills (comma-separated)",
+                    placeholder="Python, AWS, Docker"
+                )
+
+            if st.button("Find Best Match", type="primary"):
+                if not requirements:
+                    st.warning("Please enter job requirements!")
+                else:
+                    with st.spinner("Analyzing candidates..."):
+                        constraints = {}
+                        if min_years > 0:
+                            constraints["min_years"] = min_years
+                        if required_skills:
+                            constraints["skills"] = [s.strip() for s in required_skills.split(",")]
+
+                        result = st.session_state.smart_agent.find_best_match(
+                            requirements,
+                            constraints
+                        )
+
+                        if result["status"] == "success":
+                            st.success("✅ Analysis complete!")
+
+                            # Display results
+                            st.subheader("Requirements Analysis")
+                            st.write(result["requirements_analysis"])
+
+                            st.subheader("Candidate Evaluation")
+                            st.write(result["evaluation"])
+
+                            st.info(f"Considered {result['candidates_considered']} candidates")
+                        else:
+                            st.error(result.get("message", "Analysis failed"))
+
+        elif agent_mode == "Compare Candidates":
+            st.subheader("📊 Compare Specific Candidates")
+
+            candidate_ids = st.text_input(
+                "Enter candidate IDs (comma-separated):",
+                placeholder="12345, 67890, 11111"
+            )
+
+            criteria = st.text_area(
+                "Comparison Criteria:",
+                placeholder="What aspects to compare?",
                 height=100
             )
 
-        # Additional context
-        job_requirements = st.text_area(
-            "Job requirements or additional context (optional):",
-            placeholder="Enter specific requirements or context for better analysis",
-            height=100
-        )
+            if st.button("Compare Candidates", type="primary"):
+                if not candidate_ids or not criteria:
+                    st.warning("Please enter candidate IDs and criteria!")
+                else:
+                    ids = [id.strip() for id in candidate_ids.split(",")]
 
-        # Analysis settings
-        with st.expander("⚙️ Analysis Settings"):
-            col1, col2 = st.columns(2)
-            with col1:
-                temperature = st.slider(
-                    "Creativity level:",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.3,
-                    step=0.1,
-                    help="Lower = more focused, Higher = more creative"
-                )
-            with col2:
-                max_tokens = st.slider(
-                    "Response length:",
-                    min_value=200,
-                    max_value=2000,
-                    value=800,
-                    step=100,
-                    help="Maximum length of response"
-                )
-
-        # Perform analysis
-        if st.button("🔮 Analyze Candidates", type="primary", use_container_width=True):
-            # Update LLM client settings
-            st.session_state.llm_client.temperature = temperature
-            st.session_state.llm_client.max_tokens = max_tokens
-
-            # Get candidates to analyze
-            candidates_to_analyze = st.session_state.last_search_results[:num_candidates]
-
-            # Prepare candidates data
-            candidates_data = []
-            for r in candidates_to_analyze:
-                candidates_data.append({
-                    "id": r["id"],
-                    "title": r["metadata"].get("title", "Unknown"),
-                    "years_experience": r["metadata"].get("years_experience", 0),
-                    "skills": r["metadata"].get("skills", ""),
-                    "text": r["text"][:1000],  # Limit text length
-                    "similarity_score": r["similarity"]
-                })
-
-            with st.spinner(f"Analyzing with {OPENAI_CHAT_MODEL}..."):
-                try:
-                    if analysis_type == "Find best candidate match":
-                        result = st.session_state.llm_client.select_best_candidate(
-                            candidates_data,
-                            job_requirements or "Find the most qualified candidate"
+                    with st.spinner("Comparing candidates..."):
+                        result = st.session_state.query_engine.compare_candidates(
+                            ids,
+                            criteria
                         )
 
-                        # Display results
-                        st.markdown("### 🏆 Best Candidate Analysis")
-
-                        # Check if there's an error but still usable data
-                        if "error" in result and "raw_response" in result:
-                            # Try to parse the raw response
-                            raw = result["raw_response"]
-                            if "selected_id" in raw or "ranking" in raw:
-                                st.warning("Response parsing had issues but found usable data")
-                                # Display raw response in a nice format
-                                st.code(raw, language="json")
-                            else:
-                                st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
-                        elif "selected_id" in result:
-                            st.success(f"**Selected Candidate ID:** {result['selected_id']}")
-
-                            if "confidence_score" in result:
-                                st.metric("Confidence Score", f"{result['confidence_score']}/10")
-
-                            if "reasoning" in result:
-                                st.write("**Reasoning:**")
-                                st.write(result["reasoning"])
-
-                            if "strengths" in result:
-                                st.write("**Key Strengths:**")
-                                for strength in result["strengths"]:
-                                    st.write(f"✅ {strength}")
-
-                            if "concerns" in result:
-                                st.write("**Potential Concerns:**")
-                                for concern in result["concerns"]:
-                                    st.write(f"⚠️ {concern}")
-
-                            if "ranking" in result:
-                                st.write("**Full Ranking:**")
-                                for i, candidate_id in enumerate(result["ranking"], 1):
-                                    st.write(f"{i}. Candidate {candidate_id}")
+                        if result["status"] == "success":
+                            st.success("✅ Comparison complete!")
+                            st.write(result["comparison"])
                         else:
-                            st.error("Failed to get analysis results")
-                            if result:
-                                st.json(result)
+                            st.error(result.get("message", "Comparison failed"))
 
-                    elif analysis_type == "Generate comparative analysis":
-                        # Create comparison prompt
-                        prompt = f"""
-                        Compare these {len(candidates_data)} candidates:
-                        
-                        Requirements: {job_requirements or "General comparison"}
-                        
-                        Candidates:
-                        {json.dumps(candidates_data, indent=2)}
-                        
-                        Provide a detailed comparative analysis including:
-                        1. Overall comparison matrix
-                        2. Strengths and weaknesses of each
-                        3. Best fit for different scenarios
-                        4. Recommendations
-                        """
+        elif agent_mode == "Analyze Requirements":
+            st.subheader("📋 Analyze Job Requirements")
 
-                        response = st.session_state.llm_client.chat(
-                            prompt,
-                            system_prompt="You are an expert recruiter providing detailed candidate comparisons."
+            requirements = st.text_area(
+                "Job Description/Requirements:",
+                placeholder="Paste the full job description here...",
+                height=200
+            )
+
+            if st.button("Analyze", type="primary"):
+                if not requirements:
+                    st.warning("Please enter requirements!")
+                else:
+                    with st.spinner("Analyzing requirements..."):
+                        analysis = st.session_state.query_engine.analyze_candidates(
+                            requirements,
+                            requirements,
+                            top_k=10
                         )
 
-                        st.markdown("### 📊 Comparative Analysis")
-                        st.markdown(response)
+                        if analysis["status"] == "success":
+                            st.success("✅ Analysis complete!")
+                            st.write(analysis["analysis"])
 
-                    elif analysis_type == "Extract key insights":
-                        prompt = f"""
-                        Extract key insights from these {len(candidates_data)} candidates:
-                        
-                        {json.dumps(candidates_data, indent=2)}
-                        
-                        Provide:
-                        1. Common skills and patterns
-                        2. Experience distribution
-                        3. Unique qualifications
-                        4. Market trends observed
-                        """
-
-                        response = st.session_state.llm_client.chat(
-                            prompt,
-                            system_prompt="You are a talent analytics expert extracting insights from resume data."
-                        )
-
-                        st.markdown("### 💡 Key Insights")
-                        st.markdown(response)
-
-                    elif analysis_type == "Create hiring recommendations":
-                        prompt = f"""
-                        Based on these candidates, provide hiring recommendations:
-                        
-                        Job Requirements: {job_requirements or "General technical role"}
-                        
-                        Candidates:
-                        {json.dumps(candidates_data, indent=2)}
-                        
-                        Provide:
-                        1. Top 3 recommendations with justification
-                        2. Interview focus areas for each
-                        3. Potential red flags to investigate
-                        4. Salary range expectations
-                        5. Final hiring strategy
-                        """
-
-                        response = st.session_state.llm_client.chat(
-                            prompt,
-                            system_prompt="You are a senior hiring manager providing strategic recommendations."
-                        )
-
-                        st.markdown("### 📋 Hiring Recommendations")
-                        st.markdown(response)
-
-                    elif analysis_type == "Custom analysis":
-                        if not custom_prompt:
-                            st.error("Please enter your custom analysis requirements!")
+                            st.subheader("Top Candidates")
+                            for cid in analysis["candidate_ids"][:5]:
+                                st.write(f"- Candidate {cid}")
                         else:
-                            prompt = f"""
-                            {custom_prompt}
-                            
-                            Context: {job_requirements or "N/A"}
-                            
-                            Candidates:
-                            {json.dumps(candidates_data, indent=2)}
-                            """
+                            st.warning(analysis.get("message", "No candidates found"))
 
-                            response = st.session_state.llm_client.chat(
-                                prompt,
-                                system_prompt="You are an expert recruiter and analyst."
-                            )
+        elif agent_mode == "Generate Report":
+            st.subheader("📄 Generate Analysis Report")
 
-                            st.markdown("### 🎯 Custom Analysis Results")
-                            st.markdown(response)
+            report_type = st.selectbox(
+                "Report Type:",
+                ["Talent Pool Overview", "Skills Gap Analysis", "Market Insights"]
+            )
 
-                    # Update costs
-                    if st.session_state.llm_client:
-                        stats = st.session_state.llm_client.get_usage_stats()
-                        st.session_state.api_costs["chat"] = stats["total_cost"]
+            context = st.text_area(
+                "Additional Context:",
+                placeholder="Any specific focus areas or requirements?",
+                height=100
+            )
 
-                    # Show cost for this analysis
-                    st.info(f"💰 Analysis cost: ${stats['total_cost']:.4f}")
+            if st.button("Generate Report", type="primary"):
+                with st.spinner("Generating report..."):
+                    # Generate different types of insights
+                    query = context or "general analysis"
 
-                except Exception as e:
-                    st.error(f"Analysis failed: {str(e)}")
-                    st.exception(e)
+                    if report_type == "Talent Pool Overview":
+                        insights = st.session_state.query_engine.generate_insights(
+                            query,
+                            insight_type="general"
+                        )
+                    elif report_type == "Skills Gap Analysis":
+                        insights = st.session_state.query_engine.generate_insights(
+                            query,
+                            insight_type="skills"
+                        )
+                    else:  # Market Insights
+                        insights = st.session_state.query_engine.generate_insights(
+                            query,
+                            insight_type="experience"
+                        )
 
-        # Export results
-        st.markdown("---")
-        st.subheader("📥 Export Results")
+                    if insights["status"] == "success":
+                        st.success("✅ Report generated!")
 
-        col1, col2 = st.columns(2)
+                        st.subheader(f"📊 {report_type}")
+                        st.json(insights["insights"])
 
-        with col1:
-            if st.button("📊 Export to CSV", use_container_width=True):
-                # Create DataFrame from results
-                df = pd.DataFrame([
-                    {
-                        "ID": r["id"],
-                        "Title": r["metadata"].get("title", ""),
-                        "Years Experience": r["metadata"].get("years_experience", ""),
-                        "Skills": r["metadata"].get("skills", ""),
-                        "Email": r["metadata"].get("email", ""),
-                        "LinkedIn": r["metadata"].get("linkedin", ""),
-                        "Similarity Score": r["similarity"],
-                        "Preview": r["text"][:200]
-                    }
-                    for r in st.session_state.last_search_results
-                ])
+                        st.info(f"Analysis based on {insights['based_on']}")
+                    else:
+                        st.warning(insights.get("message", "No data available"))
 
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV",
-                    data=csv,
-                    file_name=f"resume_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
+# Export functionality
+if st.session_state.last_results:
+    st.markdown("---")
+    st.subheader("📥 Export Results")
 
-        with col2:
-            if st.button("📄 Export to JSON", use_container_width=True):
-                json_data = json.dumps(st.session_state.last_search_results, indent=2)
-                st.download_button(
-                    label="Download JSON",
-                    data=json_data,
-                    file_name=f"resume_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Export to CSV", use_container_width=True):
+            df = pd.DataFrame([
+                {
+                    "ID": r["id"],
+                    "Score": r["score"],
+                    "Title": r.get("metadata", {}).get("title", ""),
+                    "Years": r.get("metadata", {}).get("years_experience", ""),
+                    "Skills": r.get("metadata", {}).get("skills", ""),
+                    "Preview": r["text"][:200]
+                }
+                for r in st.session_state.last_results
+            ])
+
+            csv = df.to_csv(index=False)
+            st.download_button(
+                "Download CSV",
+                data=csv,
+                file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+
+    with col2:
+        if st.button("Export to JSON", use_container_width=True):
+            json_data = json.dumps(st.session_state.last_results, indent=2)
+            st.download_button(
+                "Download JSON",
+                data=json_data,
+                file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
 
 # Footer
 st.markdown("---")
 st.caption(
-    "Resume Analysis System v2.0 | "
-    f"Using OpenAI {OPENAI_EMBEDDING_MODEL} & {OPENAI_CHAT_MODEL} | "
-    "Powered by ChromaDB"
+    f"Resume Analysis System v3.0 - LlamaIndex Edition | "
+    f"Models: {EMBEDDING_MODEL} & {LLM_MODEL}"
 )

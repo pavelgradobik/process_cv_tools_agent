@@ -5,13 +5,117 @@ from typing import Dict, List, Tuple, Optional, Any
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from backend.config import (
-    DEFAULT_CSV_PATH,
-    ROLE_SYNONYMS,
-    SKILL_CATEGORIES,
-)
-
 logger = logging.getLogger(__name__)
+
+ROLE_SYNONYMS = {
+    "software engineer": [
+        "software developer", "swe", "software engineer", "programmer",
+        "developer", "coder", "software architect", "software dev"
+    ],
+    "data scientist": [
+        "data scientist", "ml engineer", "machine learning engineer",
+        "ai engineer", "data analyst", "research scientist", "ml specialist"
+    ],
+    "product manager": [
+        "product manager", "pm", "product owner", "po",
+        "product lead", "program manager", "product management"
+    ],
+    "designer": [
+        "designer", "ux designer", "ui designer", "product designer",
+        "ux/ui designer", "user experience designer", "visual designer",
+        "ui/ux designer", "graphic designer", "web designer"
+    ],
+    "hr": [
+        "hr", "human resources", "recruiter", "talent acquisition",
+        "people operations", "hr manager", "talent partner", "hr specialist",
+        "hr generalist", "hrbp", "hr business partner", "people ops"
+    ],
+    "qa": [
+        "qa", "quality assurance", "test engineer", "sdet",
+        "qa engineer", "tester", "automation engineer", "qa analyst",
+        "quality engineer", "test automation"
+    ],
+    "devops": [
+        "devops", "site reliability engineer", "sre", "cloud engineer",
+        "infrastructure engineer", "platform engineer", "devops engineer",
+        "systems engineer", "cloud architect"
+    ],
+    "frontend": [
+        "frontend", "front-end", "frontend developer", "ui developer",
+        "react developer", "angular developer", "vue developer",
+        "frontend engineer", "web developer", "javascript developer"
+    ],
+    "backend": [
+        "backend", "back-end", "backend developer", "server developer",
+        "api developer", "microservices developer", "backend engineer",
+        "server-side developer"
+    ],
+    "fullstack": [
+        "fullstack", "full-stack", "full stack developer",
+        "generalist engineer", "web developer", "full-stack engineer"
+    ],
+    "data engineer": [
+        "data engineer", "etl developer", "data pipeline engineer",
+        "big data engineer", "data architect", "analytics engineer"
+    ],
+    "business analyst": [
+        "business analyst", "ba", "systems analyst", "product analyst",
+        "business systems analyst", "requirements analyst"
+    ],
+    "project manager": [
+        "project manager", "pm", "technical project manager",
+        "program manager", "delivery manager", "scrum master",
+        "agile coach", "project lead"
+    ],
+    "sales": [
+        "sales", "sales executive", "account executive", "sales manager",
+        "business development", "sales representative", "account manager"
+    ],
+    "marketing": [
+        "marketing", "marketing manager", "digital marketing",
+        "growth manager", "marketing specialist", "brand manager",
+        "content marketing", "marketing executive"
+    ],
+}
+
+SKILL_CATEGORIES = {
+    "programming": [
+        "python", "java", "javascript", "typescript", "c++", "c#", "go",
+        "rust", "ruby", "php", "swift", "kotlin", "scala", "r", "matlab"
+    ],
+    "frontend": [
+        "react", "angular", "vue", "html", "css", "sass", "webpack",
+        "redux", "next.js", "nuxt.js", "svelte", "tailwind", "bootstrap"
+    ],
+    "backend": [
+        "django", "flask", "fastapi", "spring", "spring boot", "express",
+        "node.js", "rails", ".net", "laravel", "nestjs"
+    ],
+    "database": [
+        "sql", "postgresql", "mysql", "mongodb", "redis", "elasticsearch",
+        "cassandra", "dynamodb", "oracle", "sql server", "neo4j"
+    ],
+    "cloud": [
+        "aws", "gcp", "azure", "kubernetes", "docker", "terraform",
+        "ansible", "jenkins", "ci/cd", "cloudformation", "serverless"
+    ],
+    "data": [
+        "pandas", "numpy", "scikit-learn", "tensorflow", "pytorch",
+        "spark", "hadoop", "tableau", "power bi", "looker", "airflow"
+    ],
+    "mobile": [
+        "ios", "android", "react native", "flutter", "swift", "kotlin",
+        "xamarin", "ionic"
+    ],
+    "testing": [
+        "selenium", "jest", "pytest", "junit", "cypress", "postman",
+        "jmeter", "testng", "mocha", "jasmine"
+    ],
+    "soft_skills": [
+        "leadership", "communication", "teamwork", "problem solving",
+        "analytical", "project management", "agile", "scrum"
+    ],
+}
 
 
 class ResumeProcessor:
@@ -44,6 +148,7 @@ class ResumeProcessor:
             "failed": 0,
             "warnings": [],
         }
+        logger.info("Initialized ResumeProcessor")
 
     def load_file(
             self,
@@ -96,7 +201,8 @@ class ResumeProcessor:
             file_path: Optional[str] = None,
             limit: Optional[int] = None
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        file_path = file_path or DEFAULT_CSV_PATH
+        if not file_path:
+            file_path = "data/Resume.xlsx"
 
         df = self.load_file(file_path)
 
@@ -111,6 +217,8 @@ class ResumeProcessor:
         resumes = []
         total_rows = len(df) if limit is None else min(limit, len(df))
 
+        logger.info(f"Processing {total_rows} resumes...")
+
         for idx, row in df.head(total_rows).iterrows():
             try:
                 resume = self._process_single_resume(row, idx)
@@ -123,12 +231,13 @@ class ResumeProcessor:
 
         self.stats["total_processed"] = total_rows
 
+        logger.info(f"Processed {len(resumes)} resumes successfully")
+
         return resumes, self.stats
 
     def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         df.columns = [col.lower().strip().replace(" ", "_") for col in df.columns]
 
-        # Map common variations
         column_mapping = {
             "candidate_id": "id",
             "resumehtml": "resume_html",
@@ -146,10 +255,15 @@ class ResumeProcessor:
 
     def _validate_columns(self, df: pd.DataFrame) -> bool:
         required = ["id"]
-        content_columns = ["resume_html", "resume_str", "resume_text"]
+        content_columns = ["resume_html", "resume_str"]
 
         has_id = "id" in df.columns
         has_content = any(col in df.columns for col in content_columns)
+
+        if not has_id:
+            logger.warning(f"Missing ID column. Available columns: {list(df.columns)}")
+        if not has_content:
+            logger.warning(f"Missing content columns. Need one of: {content_columns}")
 
         return has_id and has_content
 
@@ -168,6 +282,9 @@ class ResumeProcessor:
 
         metadata = self._extract_metadata(row, text)
 
+        if "category" in row and pd.notna(row["category"]):
+            metadata["category"] = str(row["category"])
+
         return {
             "id": resume_id,
             "text": text,
@@ -177,16 +294,16 @@ class ResumeProcessor:
     def _extract_text(self, row: pd.Series) -> str:
         text_parts = []
 
-        if pd.notna(row.get("resume_str")):
+        if "resume_str" in row.index and pd.notna(row["resume_str"]):
             text_parts.append(str(row["resume_str"]))
 
-        if pd.notna(row.get("resume_html")):
+        if not text_parts and "resume_html" in row.index and pd.notna(row["resume_html"]):
             html_text = self._parse_html(row["resume_html"])
             if html_text:
                 text_parts.append(html_text)
 
         for field in ["title", "skills", "summary", "experience"]:
-            if field in row and pd.notna(row[field]):
+            if field in row.index and pd.notna(row[field]):
                 text_parts.append(str(row[field]))
 
         combined_text = "\n".join(text_parts)
@@ -211,7 +328,7 @@ class ResumeProcessor:
     def _clean_text(self, text: str) -> str:
         text = re.sub(r'\s+', ' ', text)
 
-        text = re.sub(r'[^\w\s\-\.\,\;\:\@\#\+\/]', ' ', text)
+        text = re.sub(r'[^\w\s\-\.\,\;\:\@\#\+\/\(\)]', ' ', text)
 
         text = re.sub(r'\s+([,.:;])', r'\1', text)
 
@@ -226,7 +343,6 @@ class ResumeProcessor:
 
         metadata["title"] = self._extract_title(row, text)
         metadata["skills"] = self._extract_skills(row, text)
-        metadata["category"] = row.get("category", "Unknown")
 
         metadata["years_experience"] = self._extract_years_experience(text)
         metadata["email"] = self._extract_email(text)
@@ -241,21 +357,32 @@ class ResumeProcessor:
         return metadata
 
     def _extract_title(self, row: pd.Series, text: str) -> str:
-        if pd.notna(row.get("title")) and row["title"].strip():
-            return row["title"].strip()
+        if "title" in row.index and pd.notna(row["title"]) and str(row["title"]).strip():
+            return str(row["title"]).strip()
 
-        lines = text.split("\n")
-        for line in lines[:5]:  # Check first 5 lines
-            line = line.strip()
-            if 10 < len(line) < 100:
-                if any(role in line.lower() for role in ["engineer", "developer", "manager", "analyst", "designer"]):
-                    return line
+        text_lower = text.lower()
+        for role, synonyms in ROLE_SYNONYMS.items():
+            for synonym in synonyms:
+                if synonym in text_lower:
+                    return role.title()
+
+        title_patterns = [
+            r'\b(Senior|Junior|Lead|Principal|Staff)\s+([\w\s]+(?:Engineer|Developer|Manager|Analyst|Designer))\b',
+            r'\b([\w\s]+(?:Engineer|Developer|Manager|Analyst|Designer|Architect|Consultant))\b',
+        ]
+
+        for pattern in title_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(0).strip().title()
+
+        # Fallback
         return "Professional"
 
     def _extract_skills(self, row: pd.Series, text: str) -> str:
         skills_text = ""
 
-        if pd.notna(row.get("skills")):
+        if "skills" in row.index and pd.notna(row["skills"]):
             skills_text = str(row["skills"])
 
         text_lower = text.lower()
@@ -263,14 +390,15 @@ class ResumeProcessor:
 
         for category, skills in SKILL_CATEGORIES.items():
             for skill in skills:
-                if skill.lower() in text_lower:
+                # Use word boundaries for more accurate matching
+                if re.search(r'\b' + re.escape(skill.lower()) + r'\b', text_lower):
                     found_skills.add(skill)
 
         if found_skills:
             additional = ", ".join(sorted(found_skills))
             skills_text = f"{skills_text}, {additional}" if skills_text else additional
 
-        return skills_text[:500]
+        return skills_text[:500]  # Limit length
 
     def _extract_years_experience(self, text: str) -> float:
         matches = self.PATTERNS["years"].findall(text)
@@ -323,34 +451,38 @@ class ResumeProcessor:
     def _extract_education(self, text: str) -> List[str]:
         education = []
 
-        # Common degree patterns
         degree_patterns = [
-            r'\b(?:B\.?S\.?|Bachelor)\s+(?:of\s+)?(?:Science|Arts|Engineering)\b',
-            r'\b(?:M\.?S\.?|Master)\s+(?:of\s+)?(?:Science|Arts|Engineering|Business)\b',
-            r'\b(?:Ph\.?D\.?|Doctorate)\b',
-            r'\b(?:MBA|MCA|BCA|BE|BTech|MTech)\b',
+            r'\b(?:B\.?S\.?|Bachelor)\s+(?:of\s+)?(?:Science|Arts|Engineering|Technology)\b',
+            r'\b(?:M\.?S\.?|Master)\s+(?:of\s+)?(?:Science|Arts|Engineering|Business|Technology)\b',
+            r'\b(?:Ph\.?D\.?|Doctorate|Doctor of Philosophy)\b',
+            r'\b(?:MBA|MCA|BCA|BE|BTech|MTech|BBA|BA|MA)\b',
         ]
 
         for pattern in degree_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             education.extend(matches)
 
-        return education[:5]  # Limit to 5 degrees
+        education = list(set(education))[:5]
+
+        return education
 
     def _extract_certifications(self, text: str) -> List[str]:
         certifications = []
 
         cert_patterns = [
-            r'\b(?:AWS|Azure|GCP)\s+(?:Certified|Associate|Professional)\b',
-            r'\b(?:PMP|ITIL|Scrum Master|CISSP|CCNA|CCNP)\b',
-            r'\b(?:Oracle|Microsoft|Google|Cisco)\s+Certified\b',
+            r'\b(?:AWS|Azure|GCP|Google Cloud)\s+(?:Certified|Associate|Professional|Expert)\b',
+            r'\b(?:PMP|ITIL|Scrum Master|CISSP|CCNA|CCNP|CEH|CompTIA)\b',
+            r'\b(?:Oracle|Microsoft|Google|Cisco|VMware)\s+Certified\b',
+            r'\b(?:Certified\s+[\w\s]+(?:Professional|Expert|Associate|Specialist))\b',
         ]
 
         for pattern in cert_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             certifications.extend(matches)
 
-        return certifications[:10]
+        certifications = list(set(certifications))[:10]
+
+        return certifications
 
 
 def load_resumes(
@@ -373,3 +505,6 @@ def process_dataframe(df: pd.DataFrame) -> List[Dict[str, Any]]:
             resumes.append(resume)
 
     return resumes
+
+
+ResumeLoader = ResumeProcessor
