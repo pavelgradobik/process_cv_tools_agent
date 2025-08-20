@@ -104,7 +104,7 @@ def display_system_info():
     **Models:**
     - Embeddings: {OPENAI_EMBEDDING_MODEL}
     - Chat: {OPENAI_CHAT_MODEL}
-
+    
     **Database:**
     - Indexed: {st.session_state.indexed_resumes} resumes
     - Status: {"🟢 Ready" if st.session_state.vector_store else "🔴 Not initialized"}
@@ -181,25 +181,16 @@ with tab1:
 
     # Indexing section
     with st.expander("🔧 Build Index", expanded=True):
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2 = st.columns([2, 1])
 
         with col1:
-            max_resumes = st.slider(
-                "Maximum resumes to index:",
-                min_value=10,
-                max_value=1000,
-                value=100,
-                step=10,
-                help="Limit the number of resumes to process"
-            )
-
-        with col2:
+            st.info("Click 'Build Index' to process ALL resumes from the selected file")
             rebuild = st.checkbox(
-                "Rebuild index",
+                "Rebuild index (delete existing)",
                 help="Delete existing index and create new one"
             )
 
-        with col3:
+        with col2:
             if st.button("🚀 Build Index", type="primary", use_container_width=True):
                 if not st.session_state.selected_file:
                     st.error("Please select a data source first!")
@@ -209,7 +200,7 @@ with tab1:
                         processor = ResumeProcessor()
                         resumes, stats = processor.process_resumes(
                             st.session_state.selected_file,
-                            limit=max_resumes
+                            limit=None  # Process ALL resumes
                         )
 
                     if not resumes:
@@ -337,21 +328,21 @@ with tab1:
                 # Display results
                 for i, result in enumerate(results, 1):
                     with st.expander(
-                            f"**#{i}** | {result['metadata'].get('title', 'Unknown')} | "
-                            f"Score: {result.get('combined_score', result['similarity']):.3f}"
+                        f"**#{i}** | {result['metadata'].get('title', 'Unknown')} | "
+                        f"Score: {result.get('combined_score', result['similarity']):.3f}"
                     ):
                         # Metadata
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.metric("Years Experience",
-                                      result['metadata'].get('years_experience', 'N/A'))
+                                     result['metadata'].get('years_experience', 'N/A'))
                         with col2:
                             st.metric("Similarity",
-                                      f"{result['similarity']:.3f}")
+                                     f"{result['similarity']:.3f}")
                         with col3:
                             if "keyword_score" in result:
                                 st.metric("Keyword Match",
-                                          f"{result['keyword_score']:.3f}")
+                                         f"{result['keyword_score']:.3f}")
 
                         # Skills
                         if result['metadata'].get('skills'):
@@ -476,7 +467,17 @@ with tab2:
                         # Display results
                         st.markdown("### 🏆 Best Candidate Analysis")
 
-                        if "selected_id" in result:
+                        # Check if there's an error but still usable data
+                        if "error" in result and "raw_response" in result:
+                            # Try to parse the raw response
+                            raw = result["raw_response"]
+                            if "selected_id" in raw or "ranking" in raw:
+                                st.warning("Response parsing had issues but found usable data")
+                                # Display raw response in a nice format
+                                st.code(raw, language="json")
+                            else:
+                                st.error(f"Analysis failed: {result.get('error', 'Unknown error')}")
+                        elif "selected_id" in result:
                             st.success(f"**Selected Candidate ID:** {result['selected_id']}")
 
                             if "confidence_score" in result:
@@ -501,19 +502,20 @@ with tab2:
                                 for i, candidate_id in enumerate(result["ranking"], 1):
                                     st.write(f"{i}. Candidate {candidate_id}")
                         else:
-                            st.error("Failed to parse analysis results")
-                            st.json(result)
+                            st.error("Failed to get analysis results")
+                            if result:
+                                st.json(result)
 
                     elif analysis_type == "Generate comparative analysis":
                         # Create comparison prompt
                         prompt = f"""
                         Compare these {len(candidates_data)} candidates:
-
+                        
                         Requirements: {job_requirements or "General comparison"}
-
+                        
                         Candidates:
                         {json.dumps(candidates_data, indent=2)}
-
+                        
                         Provide a detailed comparative analysis including:
                         1. Overall comparison matrix
                         2. Strengths and weaknesses of each
@@ -532,9 +534,9 @@ with tab2:
                     elif analysis_type == "Extract key insights":
                         prompt = f"""
                         Extract key insights from these {len(candidates_data)} candidates:
-
+                        
                         {json.dumps(candidates_data, indent=2)}
-
+                        
                         Provide:
                         1. Common skills and patterns
                         2. Experience distribution
@@ -553,12 +555,12 @@ with tab2:
                     elif analysis_type == "Create hiring recommendations":
                         prompt = f"""
                         Based on these candidates, provide hiring recommendations:
-
+                        
                         Job Requirements: {job_requirements or "General technical role"}
-
+                        
                         Candidates:
                         {json.dumps(candidates_data, indent=2)}
-
+                        
                         Provide:
                         1. Top 3 recommendations with justification
                         2. Interview focus areas for each
@@ -581,9 +583,9 @@ with tab2:
                         else:
                             prompt = f"""
                             {custom_prompt}
-
+                            
                             Context: {job_requirements or "N/A"}
-
+                            
                             Candidates:
                             {json.dumps(candidates_data, indent=2)}
                             """
