@@ -251,7 +251,6 @@ with tab1:
                             st.session_state.api_costs["embeddings"] += stats["total_cost"]
 
                         st.success(f"✅ Successfully indexed {added} resumes!")
-                        st.balloons()
 
     # Search section
     st.markdown("---")
