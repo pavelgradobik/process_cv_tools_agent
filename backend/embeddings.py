@@ -16,7 +16,6 @@ from backend.config import (
     MODEL_PRICING,
 )
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,7 @@ class OpenAIEmbedder:
 
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=wait_exponential(multiplier=2, min=5, max=60),  # Increased wait times
     )
     def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         try:
@@ -100,6 +99,10 @@ class OpenAIEmbedder:
 
         except Exception as e:
             logger.error(f"Error in embedding batch: {e}")
+            # Check if it's a rate limit error
+            if "429" in str(e) or "rate" in str(e).lower():
+                logger.info("Rate limit hit, waiting before retry...")
+                time.sleep(10)  # Extra wait for rate limits
             raise
 
     def embed_texts(
@@ -133,14 +136,36 @@ class OpenAIEmbedder:
                 embeddings.extend(batch_embeddings)
 
                 if i + self.batch_size < len(cleaned_texts):
-                    time.sleep(0.1)  # Small delay between batches
+                    # Smaller batches = less delay, larger batches = more delay
+                    delay = 0.5 if self.batch_size <= 10 else 1.0
+                    time.sleep(delay)  # Prevent rate limiting
 
             except Exception as e:
                 logger.error(f"Failed to embed batch {batch_num}: {e}")
-                if embeddings:
-                    logger.warning("Returning partial embeddings")
-                    break
-                raise
+                # For rate limit errors, wait longer
+                if "429" in str(e) or "rate" in str(e).lower():
+                    logger.info("Rate limit detected, waiting 30 seconds...")
+                    time.sleep(30)
+                    # Retry this batch with smaller size
+                    try:
+                        logger.info("Retrying with smaller batch size...")
+                        for j in range(0, len(batch), max(1, len(batch) // 2)):
+                            small_batch = batch[j:j + max(1, len(batch) // 2)]
+                            small_embeddings = self._embed_batch(small_batch)
+                            embeddings.extend(small_embeddings)
+                            time.sleep(2)  # Extra delay between retries
+                    except Exception as retry_error:
+                        logger.error(f"Retry failed: {retry_error}")
+                        if embeddings:
+                            logger.warning("Returning partial embeddings")
+                            break
+                        raise
+                else:
+                    # Return partial results if available
+                    if embeddings:
+                        logger.warning("Returning partial embeddings")
+                        break
+                    raise
 
         embeddings_array = np.array(embeddings, dtype=np.float32)
 

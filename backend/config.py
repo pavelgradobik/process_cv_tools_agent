@@ -14,7 +14,7 @@ CHROMA_DIR = DATA_DIR / "chromadb"
 for directory in [DATA_DIR, UPLOADS_DIR, CHROMA_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_CSV_PATH = DATA_DIR / "Resume.csv"
+DEFAULT_CSV_PATH = DATA_DIR / "Resume.xlsx"  # Changed from Resume.csv to Resume.xlsx
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -45,10 +45,10 @@ EMBEDDING_DIMENSIONS = {
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
 
-EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "100"))
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "10"))  # Reduced from 100 to avoid rate limits
 
-MAX_TOKENS_PER_REQUEST = 8191
-MAX_CONTEXT_LENGTH = 4096
+MAX_TOKENS_PER_REQUEST = 8000  # OpenAI embedding limit is 8191, leave buffer
+MAX_CONTEXT_LENGTH = 4096  # For chat models
 
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "10"))
 MIN_SIMILARITY_SCORE = float(os.getenv("MIN_SIMILARITY_SCORE", "0.5"))
@@ -61,9 +61,10 @@ SEARCH_WEIGHTS = {
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-RETRY_DELAY = 1
+RETRY_DELAY = 1  # seconds
 
-REQUESTS_PER_MINUTE = 500
+# Rate Limiting
+REQUESTS_PER_MINUTE = 500  # OpenAI tier limits
 TOKENS_PER_MINUTE = 200000
 
 ROLE_SYNONYMS: Dict[str, List[str]] = {
@@ -121,8 +122,8 @@ SKILL_CATEGORIES = {
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+
 def validate_config():
-    """Validate configuration settings."""
     errors = []
 
     if not OPENAI_API_KEY:
@@ -136,5 +137,6 @@ def validate_config():
 
     if errors:
         raise ValueError(f"Configuration errors: {'; '.join(errors)}")
+
 
 validate_config()
