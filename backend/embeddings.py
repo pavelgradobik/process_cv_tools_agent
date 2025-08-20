@@ -16,7 +16,7 @@ from backend.config import (
     MODEL_PRICING,
 )
 
-# logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,12 @@ class OpenAIEmbedder:
             model: str = OPENAI_EMBEDDING_MODEL,
             api_key: Optional[str] = None,
             batch_size: int = EMBED_BATCH_SIZE,
+            max_tokens_per_text: int = 8000,
     ):
         self.model = model
         self.batch_size = batch_size
         self.api_key = api_key or OPENAI_API_KEY
+        self.max_tokens_per_text = max_tokens_per_text
 
         self.client = OpenAI(api_key=self.api_key, timeout=REQUEST_TIMEOUT)
 
@@ -61,12 +63,12 @@ class OpenAIEmbedder:
                 continue
 
             token_count = self.count_tokens(text)
-            if token_count > MAX_TOKENS_PER_REQUEST:
+            if token_count > self.max_tokens_per_text:
                 logger.warning(
                     f"Text at index {i} exceeds token limit "
-                    f"({token_count} > {MAX_TOKENS_PER_REQUEST}). Truncating..."
+                    f"({token_count} > {self.max_tokens_per_text}). Truncating..."
                 )
-                tokens = self.tokenizer.encode(text)[:MAX_TOKENS_PER_REQUEST]
+                tokens = self.tokenizer.encode(text)[:self.max_tokens_per_text]
                 text = self.tokenizer.decode(tokens)
 
             cleaned_texts.append(text)
@@ -105,7 +107,6 @@ class OpenAIEmbedder:
             texts: List[str],
             show_progress: bool = True,
     ) -> np.ndarray:
-
         if not texts:
             return np.array([])
 
@@ -141,7 +142,6 @@ class OpenAIEmbedder:
                     break
                 raise
 
-        # Convert to numpy array
         embeddings_array = np.array(embeddings, dtype=np.float32)
 
         logger.info(
