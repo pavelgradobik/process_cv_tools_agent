@@ -15,6 +15,7 @@ from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.response_synthesizers import get_response_synthesizer
 from llama_index.core.postprocessor import SimilarityPostprocessor
+from llama_index.core.vector_stores import MetadataFilters, FilterCondition, MetadataFilter
 
 from backend.llama_config import (
     CHROMA_DIR,
@@ -204,10 +205,57 @@ class LlamaIndexStore:
         if not self.index:
             raise ValueError("Index not built. Call build_index() first.")
 
+        from llama_index.core.vector_stores import MetadataFilters, FilterCondition, MetadataFilter
+
+        metadata_filters = None
+        if filters:
+            filter_list = []
+            for key, value in filters.items():
+                if isinstance(value, dict):
+                    if "$gte" in value:
+                        filter_list.append(
+                            MetadataFilter(
+                                key=key,
+                                value=value["$gte"],
+                                operator=">="
+                            )
+                        )
+                    elif "$lte" in value:
+                        filter_list.append(
+                            MetadataFilter(
+                                key=key,
+                                value=value["$lte"],
+                                operator="<="
+                            )
+                        )
+                    elif "$eq" in value:
+                        filter_list.append(
+                            MetadataFilter(
+                                key=key,
+                                value=value["$eq"],
+                                operator="=="
+                            )
+                        )
+                else:
+                    # Simple equality filter
+                    filter_list.append(
+                        MetadataFilter(
+                            key=key,
+                            value=value,
+                            operator="=="
+                        )
+                    )
+
+            if filter_list:
+                metadata_filters = MetadataFilters(
+                    filters=filter_list,
+                    condition=FilterCondition.AND
+                )
+
         retriever = VectorIndexRetriever(
             index=self.index,
             similarity_top_k=top_k,
-            filters=filters,
+            filters=metadata_filters,
         )
 
         nodes = retriever.retrieve(query)

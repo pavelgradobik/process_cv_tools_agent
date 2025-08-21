@@ -349,10 +349,15 @@ class ResumeProcessor:
         metadata["phone"] = self._extract_phone(text)
         metadata["linkedin"] = self._extract_linkedin(text)
         metadata["github"] = self._extract_github(text)
-        metadata["roles"] = self._extract_roles(text)
 
-        metadata["education"] = self._extract_education(text)
-        metadata["certifications"] = self._extract_certifications(text)
+        roles_list = self._extract_roles(text)
+        metadata["roles"] = ", ".join(roles_list) if roles_list else ""
+
+        education_list = self._extract_education(text)
+        metadata["education"] = ", ".join(education_list) if education_list else ""
+
+        certifications_list = self._extract_certifications(text)
+        metadata["certifications"] = ", ".join(certifications_list) if certifications_list else ""
 
         return metadata
 
@@ -376,7 +381,6 @@ class ResumeProcessor:
             if match:
                 return match.group(0).strip().title()
 
-        # Fallback
         return "Professional"
 
     def _extract_skills(self, row: pd.Series, text: str) -> str:
@@ -390,7 +394,6 @@ class ResumeProcessor:
 
         for category, skills in SKILL_CATEGORIES.items():
             for skill in skills:
-                # Use word boundaries for more accurate matching
                 if re.search(r'\b' + re.escape(skill.lower()) + r'\b', text_lower):
                     found_skills.add(skill)
 
@@ -398,7 +401,7 @@ class ResumeProcessor:
             additional = ", ".join(sorted(found_skills))
             skills_text = f"{skills_text}, {additional}" if skills_text else additional
 
-        return skills_text[:500]  # Limit length
+        return skills_text[:500]
 
     def _extract_years_experience(self, text: str) -> float:
         matches = self.PATTERNS["years"].findall(text)

@@ -3,6 +3,18 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import nltk
+
+project_nltk = Path(__file__).parent.parent / "nltk_data"
+if project_nltk.exists():
+    nltk.data.path.insert(0, str(project_nltk))
+else:
+    try:
+        nltk.download('stopwords', quiet=True)
+        nltk.download('punkt', quiet=True)
+    except:
+        pass
+
 from llama_index.core import Settings
 from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -27,7 +39,7 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
 SIMILARITY_TOP_K = int(os.getenv("DEFAULT_TOP_K", "10"))
 RESPONSE_MODE = "compact"  # Options: "compact", "tree_summarize", "no_text"
 
-VECTOR_STORE_TYPE = "chroma"  # We're using ChromaDB
+VECTOR_STORE_TYPE = "chroma"
 PERSIST_DIR = "./data/llama_index_storage"
 CHROMA_COLLECTION = "llama_resumes"
 
@@ -39,7 +51,6 @@ CHROMA_DIR = DATA_DIR / "chromadb_llama"
 for directory in [DATA_DIR, STORAGE_DIR, CHROMA_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-
 def initialize_llama_index(
         embedding_model: Optional[str] = None,
         llm_model: Optional[str] = None,
@@ -50,7 +61,7 @@ def initialize_llama_index(
     Settings.embed_model = OpenAIEmbedding(
         model=embedding_model or EMBEDDING_MODEL,
         api_key=OPENAI_API_KEY,
-        embed_batch_size=10,  # to avoid rate limits
+        embed_batch_size=10,
     )
 
     Settings.llm = OpenAI(
@@ -87,7 +98,6 @@ def initialize_llama_index(
         f"  - Chunk size: {chunk_size or CHUNK_SIZE}\n"
         f"  - Chunk overlap: {chunk_overlap or CHUNK_OVERLAP}"
     )
-
 
 QA_PROMPT_TEMPLATE = """
 Context information is below.
@@ -138,7 +148,6 @@ Select the best candidate and provide:
 Respond in a structured format.
 """
 
-
 class CostTracker:
     PRICING = {
         "text-embedding-3-small": 0.00002,  # per 1k tokens
@@ -183,7 +192,6 @@ class CostTracker:
             "llm_output_tokens": self.llm_output_tokens,
             "total_cost": round(self.total_cost, 4),
         }
-
 
 cost_tracker = CostTracker()
 

@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 import json
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -168,7 +169,7 @@ with tab1:
     with st.expander("📁 Data Source", expanded=True):
         source_type = st.radio(
             "Select data source:",
-            ["Use Resume.xlsx", "Upload file"],
+            ["Use Resume.xlsx", "Upload file", "Download from URL"],
             horizontal=True,
         )
 
@@ -180,7 +181,7 @@ with tab1:
             else:
                 st.error("Resume.xlsx not found in data directory")
 
-        else:
+        elif source_type == "Upload file":
             uploaded_file = st.file_uploader(
                 "Upload CSV or Excel file",
                 type=["csv", "xlsx", "xls"],
@@ -195,6 +196,44 @@ with tab1:
 
                 st.session_state.selected_file = str(save_path)
                 st.success(f"✅ Uploaded: {uploaded_file.name}")
+
+        else:  # Download from URL
+            url = st.text_input(
+                "Enter CSV/Excel URL:",
+                placeholder="https://example.com/resumes.csv or .xlsx",
+                help="Enter the direct link to a CSV or Excel file"
+            )
+
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                download_btn = st.button("Download", type="primary", use_container_width=True)
+
+            if download_btn and url:
+                try:
+                    import urllib.request
+                    from datetime import datetime
+
+                    # Determine file extension from URL
+                    file_ext = ".xlsx" if "xlsx" in url.lower() else ".csv"
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"downloaded_resume_{timestamp}{file_ext}"
+                    save_path = Path("data/uploads") / filename
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Download file
+                    with st.spinner(f"Downloading from {url}..."):
+                        urllib.request.urlretrieve(url, str(save_path))
+
+                    st.session_state.selected_file = str(save_path)
+                    st.success(f"✅ Downloaded: {filename}")
+
+                    # Show file info
+                    file_size = save_path.stat().st_size / (1024 * 1024)  # MB
+                    st.info(f"File size: {file_size:.2f} MB")
+
+                except Exception as e:
+                    st.error(f"Download failed: {str(e)}")
+                    st.info("Make sure the URL is a direct link to the file.")
 
     # Indexing controls
     with st.expander("🔧 Build Index", expanded=True):
