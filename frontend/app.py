@@ -29,7 +29,16 @@ from backend.llama_query_engine import (
     SmartResumeAgent,
     QueryConfig,
 )
-
+from backend.react_agent import (
+    ReActResumeAgent,
+    create_react_agent,
+)
+from backend.agent_config import (
+    AgentConfigManager,
+    AgentMode,
+    AgentValidator,
+    validate_agent_setup,
+)
 # Page configuration
 st.set_page_config(
     page_title="Resume Analysis System - LlamaIndex",
@@ -37,6 +46,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if "react_agent" not in st.session_state:
+    st.session_state.react_agent = None
+if "react_chat_history" not in st.session_state:
+    st.session_state.react_chat_history = []
+if "show_reasoning" not in st.session_state:
+    st.session_state.show_reasoning = True
+if "agent_stats" not in st.session_state:
+    st.session_state.agent_stats = {}
 
 # Initialize session state
 if "llama_store" not in st.session_state:
@@ -93,7 +111,40 @@ def display_sidebar():
     🔤 **Embeddings**: {EMBEDDING_MODEL}
     """)
 
-    # Cost tracking
+    # ReAct Agent Status (NEW)
+    st.sidebar.markdown("### 🧠 ReAct Agent")
+
+    if st.session_state.react_agent:
+        agent_stats = st.session_state.agent_stats or {}
+        st.sidebar.success("🟢 Agent Active")
+
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            st.metric("Queries", agent_stats.get('total_queries', 0))
+        with col2:
+            st.metric("Tools", agent_stats.get('tools_available', 0))
+
+        # Tool usage summary
+        tool_usage = agent_stats.get('tool_usage', {})
+        if tool_usage:
+            st.sidebar.markdown("**Tool Usage:**")
+            for tool, count in tool_usage.items():
+                st.sidebar.caption(f"• {tool}: {count}")
+    else:
+        st.sidebar.warning("🔴 Agent Inactive")
+        if st.sidebar.button("🚀 Quick Start Agent"):
+            try:
+                if st.session_state.llama_store:
+                    st.session_state.react_agent = quick_agent_setup(st.session_state.llama_store)
+                    st.session_state.agent_stats = st.session_state.react_agent.get_session_stats()
+                    st.sidebar.success("Agent activated!")
+                    st.rerun()
+                else:
+                    st.sidebar.error("Please build index first")
+            except Exception as e:
+                st.sidebar.error(f"Failed: {str(e)}")
+
+    # Cost tracking (existing code continues...)
     st.sidebar.markdown("### 💰 Cost Tracking")
     costs = cost_tracker.get_summary()
 
@@ -157,7 +208,7 @@ initialize_system()
 display_sidebar()
 
 # Main tabs
-tab1, tab2, tab3 = st.tabs(["📚 Index Management", "🔍 Smart Search", "🤖 AI Agent"])
+tab1, tab2, tab3, tab4 = st.tabs(["Index Management", "Smart Search", "AI Agent", "ReAct Agent"])
 
 # ============================
 # TAB 1: Index Management
@@ -601,6 +652,338 @@ with tab3:
                         st.info(f"Analysis based on {insights['based_on']}")
                     else:
                         st.warning(insights.get("message", "No data available"))
+
+
+# ============================
+# TAB 4: 🧠 ReAct Agent (NEW)
+# ============================
+with tab4:
+    st.header("🧠 ReAct Agent - Reasoning + Acting")
+    st.caption("AI agent that shows its reasoning process while solving your queries")
+
+    # Check system readiness
+    if not validate_agent_setup():
+        st.error("⚠️ ReAct Agent system not ready!")
+
+        system_check = AgentValidator.check_system_requirements()
+        missing = system_check.get('dependencies_missing', [])
+
+        if missing:
+            st.write("**Missing dependencies:**")
+            for dep in missing:
+                st.write(f"- {dep}")
+
+            st.code("pip install duckduckgo-search>=3.9.6")
+        st.stop()
+
+    # Agent initialization section
+    with st.expander("🤖 Agent Configuration", expanded=st.session_state.react_agent is None):
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            agent_mode = st.selectbox(
+                "Agent Mode:",
+                options=[mode.value for mode in AgentMode],
+                index=2,  # Default to demo mode
+                help="Choose the agent configuration mode"
+            )
+
+            st.session_state.show_reasoning = st.checkbox(
+                "Show Reasoning Traces",
+                value=True,
+                help="Display the agent's step-by-step thinking process"
+            )
+
+        with col2:
+            # Agent status
+            if st.session_state.react_agent:
+                st.success("🟢 Agent Active")
+                agent_info = st.session_state.react_agent.get_session_stats()
+                st.metric("Queries Handled", agent_info['total_queries'])
+                st.metric("Tools Available", agent_info['tools_available'])
+            else:
+                st.warning("🔴 Agent Inactive")
+
+        # Initialize or reinitialize agent
+        init_col1, init_col2 = st.columns([1, 1])
+
+        with init_col1:
+            if st.button("🚀 Initialize Agent", type="primary", use_container_width=True):
+                with st.spinner("Initializing ReAct Agent..."):
+                    try:
+                        # Get configuration for selected mode
+                        config = AgentConfigManager.get_config(AgentMode(agent_mode))
+
+                        # Create agent
+                        agent = create_react_agent(
+                            store=st.session_state.llama_store,
+                            llm_model=config.llm_model,
+                            verbose=config.verbose,
+                            temperature=config.temperature,
+                            max_iterations=config.max_iterations,
+                            timeout=config.timeout,
+                        )
+
+                        st.session_state.react_agent = agent
+                        st.session_state.agent_stats = agent.get_session_stats()
+
+                        st.success(f"✅ Agent initialized in {agent_mode} mode!")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Failed to initialize agent: {str(e)}")
+
+        with init_col2:
+            if st.button("🔄 Reset Agent", use_container_width=True):
+                st.session_state.react_agent = None
+                st.session_state.react_chat_history = []
+                st.session_state.agent_stats = {}
+                st.success("Agent reset successfully!")
+                st.rerun()
+
+    # Main chat interface
+    if st.session_state.react_agent is None:
+        st.info("👆 Please initialize the ReAct Agent first")
+    else:
+        # Chat input
+        st.markdown("---")
+        st.subheader("💬 Chat with ReAct Agent")
+
+        # Example queries
+        with st.expander("💡 Example Queries"):
+            examples = [
+                "Find Python developers with machine learning experience",
+                "What is the average years of experience for our candidates?",
+                "Search for HR managers with 10+ years experience",
+                "What are the latest trends in artificial intelligence?",
+                "Calculate the percentage of candidates with Python skills",
+                "Compare frontend vs backend developer experience levels"
+            ]
+
+            cols = st.columns(2)
+            for i, example in enumerate(examples):
+                with cols[i % 2]:
+                    if st.button(f"💭 {example}", key=f"example_{i}", use_container_width=True):
+                        st.session_state.user_input = example
+
+        # Chat input
+        user_input = st.text_area(
+            "Your Question:",
+            value=st.session_state.get('user_input', ''),
+            placeholder="Ask me anything about resumes, candidates, or general questions...",
+            height=100,
+            key="react_chat_input"
+        )
+
+        # Chat controls
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+
+        with col1:
+            send_message = st.button("🚀 Send Message", type="primary", use_container_width=True)
+
+        with col2:
+            if st.button("🧹 Clear Chat", use_container_width=True):
+                st.session_state.react_chat_history = []
+                st.session_state.react_agent.clear_conversation_history()
+                st.success("Chat cleared!")
+                st.rerun()
+
+        with col3:
+            show_stats = st.button("📊 Stats", use_container_width=True)
+
+        with col4:
+            export_chat = st.button("📥 Export", use_container_width=True)
+
+        # Process message
+        if send_message and user_input.strip():
+            with st.spinner("🤖 Agent thinking..."):
+                try:
+                    # Get response from agent
+                    response = st.session_state.react_agent.chat_sync(user_input)
+
+                    # Add to chat history
+                    chat_entry = {
+                        "user": user_input,
+                        "agent": response,
+                        "timestamp": response.get('timestamp', ''),
+                    }
+                    st.session_state.react_chat_history.append(chat_entry)
+
+                    # Update stats
+                    st.session_state.agent_stats = st.session_state.react_agent.get_session_stats()
+
+                    # Clear input
+                    st.session_state.user_input = ""
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+
+        # Display chat history
+        if st.session_state.react_chat_history:
+            st.markdown("---")
+            st.subheader("💬 Conversation History")
+
+            # Display conversations in reverse order (most recent first)
+            for i, chat in enumerate(reversed(st.session_state.react_chat_history)):
+                with st.container():
+                    # User message
+                    st.markdown(f"**👤 You:** {chat['user']}")
+
+                    # Agent response
+                    response = chat['agent']
+
+                    if response['success']:
+                        # Main response
+                        st.markdown(f"**🤖 Agent:** {response['response']}")
+
+                        # Reasoning trace (if enabled)
+                        if st.session_state.show_reasoning and response.get('reasoning_trace'):
+                            with st.expander("🧠 Reasoning Trace", expanded=False):
+                                trace = response['reasoning_trace']
+
+                                if trace:
+                                    for j, step in enumerate(trace, 1):
+                                        st.markdown(f"**Step {j}: {step.get('tool', 'Unknown')}**")
+
+                                        # Show tool input if available
+                                        tool_input = step.get('input', {})
+                                        if tool_input:
+                                            with st.expander(f"Input for {step.get('tool', 'Tool')}", expanded=False):
+                                                st.json(tool_input)
+
+                                        st.caption(f"⏰ {step.get('timestamp', 'N/A')}")
+
+                                        if j < len(trace):
+                                            st.markdown("↓")
+                                else:
+                                    st.info("No reasoning trace available for this response")
+
+                        # Response metadata
+                        col1, col2, col3 = st.columns(3)
+
+                        with col1:
+                            st.caption(f"⏱️ Response Time: {response.get('response_time', 0):.2f}s")
+
+                        with col2:
+                            tools_used = response.get('tools_used', [])
+                            if tools_used:
+                                st.caption(f"🛠️ Tools: {', '.join(tools_used)}")
+                            else:
+                                st.caption("🛠️ Tools: None")
+
+                        with col3:
+                            st.caption(f"🕒 {response.get('timestamp', 'N/A')}")
+
+                    else:
+                        # Error response
+                        st.error(f"**🤖 Agent Error:** {response.get('error', 'Unknown error')}")
+
+                    st.markdown("---")
+
+        # Stats display
+        if show_stats and st.session_state.agent_stats:
+            st.markdown("---")
+            st.subheader("📊 Agent Statistics")
+
+            stats = st.session_state.agent_stats
+
+            # Overview metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric(
+                    "Total Queries",
+                    stats.get('total_queries', 0)
+                )
+
+            with col2:
+                st.metric(
+                    "Tools Available",
+                    stats.get('tools_available', 0)
+                )
+
+            with col3:
+                st.metric(
+                    "Session Uptime",
+                    stats.get('session_uptime', 'N/A')
+                )
+
+            with col4:
+                cost_summary = stats.get('cost_summary', {})
+                total_cost = cost_summary.get('total_cost', 0)
+                st.metric(
+                    "Total Cost",
+                    f"${total_cost:.4f}"
+                )
+
+            # Tool usage breakdown
+            tool_usage = stats.get('tool_usage', {})
+            if tool_usage:
+                st.markdown("**🛠️ Tool Usage:**")
+
+                for tool, count in tool_usage.items():
+                    st.metric(tool, count)
+
+            # Agent configuration
+            agent_config = stats.get('agent_config', {})
+            if agent_config:
+                with st.expander("⚙️ Agent Configuration"):
+                    st.json(agent_config)
+
+        # Export functionality
+        if export_chat and st.session_state.react_chat_history:
+            st.markdown("---")
+            st.subheader("📥 Export Chat History")
+
+            # Prepare export data
+            export_data = {
+                "chat_history": st.session_state.react_chat_history,
+                "session_stats": st.session_state.agent_stats,
+                "export_timestamp": datetime.now().isoformat(),
+                "agent_mode": agent_mode,
+            }
+
+            # JSON export
+            col1, col2 = st.columns(2)
+
+            with col1:
+                json_data = json.dumps(export_data, indent=2)
+                st.download_button(
+                    "📄 Download as JSON",
+                    data=json_data,
+                    file_name=f"react_agent_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+
+            with col2:
+                # Create a simplified text version
+                text_data = []
+                text_data.append(f"ReAct Agent Chat Export")
+                text_data.append(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                text_data.append(f"Agent Mode: {agent_mode}")
+                text_data.append("=" * 50)
+
+                for i, chat in enumerate(st.session_state.react_chat_history, 1):
+                    text_data.append(f"\nConversation {i}:")
+                    text_data.append(f"User: {chat['user']}")
+                    text_data.append(f"Agent: {chat['agent']['response']}")
+
+                    if chat['agent'].get('tools_used'):
+                        text_data.append(f"Tools Used: {', '.join(chat['agent']['tools_used'])}")
+
+                    text_data.append("-" * 30)
+
+                text_export = "\n".join(text_data)
+
+                st.download_button(
+                    "📝 Download as Text",
+                    data=text_export,
+                    file_name=f"react_agent_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
 # Export functionality
 if st.session_state.last_results:

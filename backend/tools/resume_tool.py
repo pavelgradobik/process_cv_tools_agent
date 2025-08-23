@@ -3,7 +3,6 @@ from typing import Optional, Dict, Any, List
 from llama_index.core.tools import FunctionTool
 from backend.llama_index_store import LlamaIndexStore
 from backend.llama_query_engine import QueryConfig
-from frontend.app import metadata
 
 logger = logging.getLogger(__name__)
 

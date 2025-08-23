@@ -2,18 +2,32 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional
+import ssl
 
-import nltk
-
-project_nltk = Path(__file__).parent.parent / "nltk_data"
-if project_nltk.exists():
-    nltk.data.path.insert(0, str(project_nltk))
-else:
+try:
     try:
-        nltk.download('stopwords', quiet=True)
-        nltk.download('punkt', quiet=True)
-    except:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
         pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+
+    import nltk
+
+    project_nltk = Path(__file__).parent.parent / "nltk_data"
+    if project_nltk.exists():
+        nltk.data.path.insert(0, str(project_nltk))
+    else:
+        try:
+            nltk.download('stopwords', quiet=True)
+            nltk.download('punkt', quiet=True)
+        except Exception as e:
+            logging.warning(f"NLTK download failed: {e}. NLTK features may not work properly.")
+
+except ImportError:
+    logging.warning("NLTK not available. Text processing may be limited.")
+except Exception as e:
+    logging.warning(f"NLTK setup failed: {e}. Continuing without NLTK.")
 
 from llama_index.core import Settings
 from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler
