@@ -154,3 +154,19 @@ def create_resume_tool(store: LlamaIndexStore) -> FunctionTool:
     )
 
     return analysis_tool
+
+
+def create_candidate_analysis_tool(store: LlamaIndexStore) -> FunctionTool:
+    tool_instance = ResumeRetrievalTool(store)
+
+    analysis_tool = FunctionTool.from_defaults(
+        fn=tool_instance.analyze_candidate,
+        name="analyze_candidate",
+        description=(
+            "Analyze a specific candidate in detail. Use this tool when you have a candidate ID "
+            "and want to get comprehensive information about them, including full resume content, "
+            "contact details, and skills breakdown."
+        )
+    )
+
+    return analysis_tool
